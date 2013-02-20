@@ -430,6 +430,8 @@ request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
     Args = [self(), Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
     Pid = spawn_link(lhttpc_client, request, Args),
     receive
+        {response, Pid, {error, {Error, _Stacktrace}}} ->
+            {error, Error};
         {response, Pid, R} ->
             R;
         {'EXIT', Pid, Reason} ->
