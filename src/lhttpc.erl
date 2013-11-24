@@ -258,7 +258,8 @@ request(URL, Method, Hdrs, Body, Timeout) ->
 %%------------------------------------------------------------------------------
 -spec request(string(), method(), headers(), iodata(),
               pos_timeout(), options()) -> result().
-request(URL, Method, Hdrs, Body, Timeout, Options) ->
+request(URL, Method, Hdrs0, Body, Timeout, Options) ->
+    Hdrs = [{to_l(K),to_l(V)} || {K,V} <- Hdrs0],
     #lhttpc_url{
          host = Host,
          port = Port,
@@ -266,7 +267,7 @@ request(URL, Method, Hdrs, Body, Timeout, Options) ->
          is_ssl = Ssl,
          user = User,
          password = Passwd
-        } = lhttpc_lib:parse_url(URL),
+        } = lhttpc_lib:parse_url(to_l(URL)),
     Headers = case User of
         "" ->
             Hdrs;
@@ -275,6 +276,10 @@ request(URL, Method, Hdrs, Body, Timeout, Options) ->
             lists:keystore("Authorization", 1, Hdrs, {"Authorization", Auth})
     end,
     request(Host, Port, Ssl, Path, Method, Headers, Body, Timeout, Options).
+
+to_l(Bin) when is_binary(Bin) -> binary_to_list(Bin);
+to_l(List) when is_list(List) -> List;
+to_l(Atom) when is_atom(Atom) -> atom_to_list(Atom).
 
 %%------------------------------------------------------------------------------
 %% @spec (Host, Port, Ssl, Path, Method, Hdrs, RequestBody, Timeout, Options) ->
