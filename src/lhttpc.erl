@@ -182,7 +182,7 @@ delete_pool(PoolName) when is_atom(PoolName) ->
 %% @see request/9
 %% @end
 %%------------------------------------------------------------------------------
--spec request(string(), method(), headers(), pos_timeout()) -> result().
+-spec request(string() | binary(), method(), headers(), pos_timeout()) -> result().
 request(URL, Method, Hdrs, Timeout) ->
     request(URL, Method, Hdrs, [], Timeout, []).
 
@@ -207,7 +207,7 @@ request(URL, Method, Hdrs, Timeout) ->
 %% @see request/9
 %% @end
 %%------------------------------------------------------------------------------
--spec request(string(), method(), headers(), iodata(), pos_timeout()) -> result().
+-spec request(string() | binary(), method(), headers(), iodata(), pos_timeout()) -> result().
 request(URL, Method, Hdrs, Body, Timeout) ->
     request(URL, Method, Hdrs, Body, Timeout, []).
 
@@ -256,7 +256,7 @@ request(URL, Method, Hdrs, Body, Timeout) ->
 %% @see request/9
 %% @end
 %%------------------------------------------------------------------------------
--spec request(string(), method(), headers(), iodata(),
+-spec request(string() | binary(), method(), headers(), iodata(),
               pos_timeout(), options()) -> result().
 request(URL, Method, Hdrs0, Body, Timeout, Options) ->
     Hdrs = [{to_l(K),to_l(V)} || {K,V} <- Hdrs0],
