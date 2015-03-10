@@ -97,13 +97,13 @@ request(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
     Result = try
         execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options)
     catch
-        Reason ->
-            {response, self(), {error, Reason}};
+        % Reason ->
+        %     {response, self(), {error, Reason}};
         error:closed ->
             {response, self(), {error, connection_closed}};
-        error:Reason ->
+        Class:Reason ->
             Stack = erlang:get_stacktrace(),
-            {response, self(), {error, {Reason, Stack}}}
+            {response, self(), {Class, {Reason, Stack}}}
     end,
     case Result of
         {response, _, {ok, {no_return, _}}} -> ok;
@@ -293,7 +293,7 @@ send_request(#client_state{proxy = #lhttpc_url{}, proxy_setup = false} = State) 
             lhttpc_sock:close(Socket, Ssl),
             erlang:error(Reason)
     end;
-send_request(State) ->
+send_request(#client_state{measure_time = MeasureTime, connected_at = T2} = State) ->
 %already have socket
     Socket = State#client_state.socket,
     Ssl = State#client_state.ssl,
@@ -301,9 +301,14 @@ send_request(State) ->
     put(status, sending_request),
     case lhttpc_sock:send(Socket, Request, Ssl) of
         ok ->
-            State1 = case State#client_state.measure_time of
-                true -> State#client_state{send_request_at = os:timestamp()};
-                _ -> State
+            State1 = case MeasureTime of
+                true when T2 == undefined ->
+                    Now = os:timestamp(),
+                    State#client_state{send_request_at = Now, connected_at = Now};
+                true ->
+                    State#client_state{send_request_at = os:timestamp()};
+                _ -> 
+                    State
             end,
             put(status, sent_request),
             if

@@ -435,10 +435,10 @@ request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
     Args = [self(), Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
     MeasureTime = proplists:get_bool(measure_time, Options),
     T1 = os:timestamp(),
-    Pid = spawn_link(lhttpc_client, request, Args),
+    Pid = proc_lib:spawn_link(lhttpc_client, request, Args),
     receive
-        {response, Pid, {error, {Error, _Stacktrace}}} ->
-            {error, Error};
+        {response, Pid, {error, {Error, Stacktrace}}} ->
+            {error, {Error, Stacktrace}};
         {response, Pid, {ok, {RStatus, RHeaders, RBody}}} when MeasureTime ->
             T2 = os:timestamp(),
             {ok, {RStatus, [{total_time,timer:now_diff(T2,T1)}|RHeaders], RBody}};
