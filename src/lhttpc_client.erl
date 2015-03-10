@@ -546,7 +546,24 @@ handle_response_body(#client_state{partial_download = true} = State, Vsn,
     Method = State#client_state.method,
     case has_body(Method, element(1, Status), Hdrs) of
         true ->
-            Response = {ok, {Status, Hdrs, self()}},
+            TimeHeaders = case State#client_state.measure_time of
+                true ->
+                    T0 = State#client_state.created_at,
+                    T1 = State#client_state.allocated_at,
+                    T2 = State#client_state.connected_at,
+                    T3 = State#client_state.send_request_at,
+                    T4 = State#client_state.headers_at,
+                    T5 = os:timestamp(),
+                    [{allocate_time,timer:now_diff(T1,T0)},
+                    {connect_time,timer:now_diff(T2,T1)},
+                    {send_time,timer:now_diff(T3,T2)},
+                    {headers_time,timer:now_diff(T4,T3)},
+                    {recv_body_time,timer:now_diff(T5,T4)}];
+                _ ->
+                    []
+            end,
+
+            Response = {ok, {Status, TimeHeaders ++ Hdrs, self()}},
             State#client_state.requester ! {response, self(), Response},
             MonRef = erlang:monitor(process, State#client_state.requester),
             Res = read_partial_body(State, Vsn, Hdrs, body_type(Hdrs)),
