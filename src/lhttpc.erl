@@ -433,10 +433,15 @@ to_l(Atom) when is_atom(Atom) -> atom_to_list(Atom).
 request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
     verify_options(Options),
     Args = [self(), Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
+    MeasureTime = proplists:get_bool(measure_time, Options),
+    T1 = os:timestamp(),
     Pid = spawn_link(lhttpc_client, request, Args),
     receive
         {response, Pid, {error, {Error, _Stacktrace}}} ->
             {error, Error};
+        {response, Pid, {ok, {RStatus, RHeaders, RBody}}} when MeasureTime ->
+            T2 = os:timestamp(),
+            {ok, {RStatus, [{total_time,timer:now_diff(T2,T1)}|RHeaders], RBody}};
         {response, Pid, R} ->
             R;
         {'EXIT', Pid, Reason} ->
@@ -643,12 +648,18 @@ read_response(Pid, Timeout) ->
 kill_client(Pid) ->
     Monitor = erlang:monitor(process, Pid),
     unlink(Pid), % or we'll kill ourself :O
+    Status = case process_info(Pid, dictionary) of
+        {dictionary, Dict} -> proplists:get_value(status, Dict);
+        _ -> noproc
+    end,
     exit(Pid, timeout),
     receive
         {response, Pid, R} ->
             erlang:demonitor(Monitor, [flush]),
             R;
-        {'DOWN', _, process, Pid, Reason}  ->
+        {'DOWN', _, process, Pid, Reason} when Status =/= noproc ->
+            {error, {Reason, {status,Status}}};
+        {'DOWN', _, process, Pid, Reason} ->
             {error, Reason}
     end.
 
@@ -690,6 +701,8 @@ verify_options([{pool_connection_timeout, Size} | Options])
 verify_options([{pool_max_size, Size} | Options])
         when is_integer(Size) orelse
              Size =:= infinity->
+    verify_options(Options);
+verify_options([measure_time | Options]) ->
     verify_options(Options);
 verify_options([Option | _Rest]) ->
     erlang:error({bad_option, Option});
