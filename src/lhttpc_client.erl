@@ -101,9 +101,11 @@ request(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
         %     {response, self(), {error, Reason}};
         error:closed ->
             {response, self(), {error, connection_closed}};
+        throw:Reason ->
+            {response, self(), {error, Reason}};
         Class:Reason ->
             Stack = erlang:get_stacktrace(),
-            {response, self(), {Class, {Reason, Stack}}}
+            {response, self(), {error, {Class, Reason, Stack}}}
     end,
     case Result of
         {response, _, {ok, {no_return, _}}} -> ok;
