@@ -212,10 +212,12 @@ split_scheme("https://" ++ HostPortPath) ->
 %% @end
 %%------------------------------------------------------------------------------
 split_credentials(CredsHostPortPath) ->
-    case string:tokens(CredsHostPortPath, "@") of
-        [HostPortPath] ->
+    case re:run(CredsHostPortPath, "^([^/]*)\\@(.*)$", [{capture,all_but_first,list}]) of
+        nomatch ->
+            {"", "", CredsHostPortPath};
+        {match, ["", HostPortPath]} ->
             {"", "", HostPortPath};
-        [Creds, HostPortPath] ->
+        {match, [Creds, HostPortPath]} ->
             % RFC1738 (section 3.1) says:
             % "The user name (and password), if present, are followed by a
             % commercial at-sign "@". Within the user and password field, any ":",

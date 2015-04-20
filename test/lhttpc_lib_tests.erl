@@ -94,6 +94,16 @@ parse_url_test_() ->
                       lhttpc_lib:parse_url("http://host:180/")),
 
         ?_assertEqual(#lhttpc_url{
+                         host = "hlstament-lh.akamaihd.net",
+                         port = 80,
+                         path = "/i/hls3_suntvus15@65329/index_1000_av-p.m3u8",
+                         is_ssl = false,
+                         user = "",
+                         password = ""
+                        },
+                      lhttpc_lib:parse_url("http://hlstament-lh.akamaihd.net/i/hls3_suntvus15@65329/index_1000_av-p.m3u8")),
+
+        ?_assertEqual(#lhttpc_url{
                          host = "host",
                          port = 180,
                          path = "/foo",
