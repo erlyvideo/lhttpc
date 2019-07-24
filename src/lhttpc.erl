@@ -704,6 +704,11 @@ verify_options([{pool_max_size, Size} | Options])
     verify_options(Options);
 verify_options([measure_time | Options]) ->
     verify_options(Options);
+
+% added by flussonic team
+verify_options([{via, <<"agent://", _/binary>>} | Options]) ->
+    verify_options(Options);
+
 verify_options([Option | _Rest]) ->
     erlang:error({bad_option, Option});
 verify_options([]) ->

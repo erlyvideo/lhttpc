@@ -103,8 +103,7 @@ request(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
             {response, self(), {error, connection_closed}};
         throw:Reason ->
             {response, self(), {error, Reason}};
-        Class:Reason ->
-            Stack = erlang:get_stacktrace(),
+        Class:Reason:Stack ->
             {response, self(), {error, {Class, Reason, Stack}}}
     end,
     case Result of
@@ -160,6 +159,16 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
         true -> os:timestamp();
         _ -> undefined
     end,
+
+    ViaOpts = case proplists:get_value(via, Options, undefined) of
+      % this is how it worked without flussonic modifications
+      undefined -> [];
+      % this was added by flussonic team:
+      % it's not supposed to work together with proxy option
+      Via -> [{via, Via}]
+    end,
+    ConnectOptions = ViaOpts ++ proplists:get_value(connect_options, Options, []),
+
     State = #client_state{
         host = Host,
         port = Port,
@@ -174,7 +183,7 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
         socket = Socket,
         connect_timeout = proplists:get_value(connect_timeout, Options,
             infinity),
-        connect_options = proplists:get_value(connect_options, Options, []),
+        connect_options = ConnectOptions,
         attempts = 1 + proplists:get_value(send_retry, Options, 1),
         partial_upload = PartialUpload,
         upload_window = UploadWindowSize,
@@ -189,10 +198,10 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
         proxy_ssl_options = proplists:get_value(proxy_ssl_options, Options, [])
     },
     put(status, sending_request),
-    Response = case send_request(State) of
-        {R, undefined} ->
+    Response = case {send_request(State), ViaOpts} of
+        {{R, undefined}, _} ->
             {ok, R};
-        {R, NewSocket} ->
+        {{R, NewSocket}, []} ->
             % The socket we ended up doing the request over is returned
             % here, it might be the same as Socket, but we don't know.
             % I've noticed that we don't want to give send sockets that we
@@ -202,6 +211,9 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
             % * Due to an error in this module (returning dead sockets for
             %   instance)
             ok = lhttpc_manager:client_done(Pool, Host, Port, Ssl, NewSocket),
+            {ok, R};
+        {{R, NewSocket}, _} ->
+            lhttpc_sock:close(NewSocket, Ssl),
             {ok, R}
     end,
     {response, self(), Response}.
@@ -245,14 +257,18 @@ send_request(#client_state{socket = undefined, measure_time = MeasureTime} = Sta
             throw(connect_timeout);
         {error, 'record overflow'} ->
             throw(ssl_error);
+        {error, econnrefused} ->
+            throw(econnrefused);
         {error, Reason} ->
             erlang:error(Reason)
     catch
         exit:{{{badmatch, {error, {asn1, _}}}, _}, _} ->
             throw(ssl_decode_error);
-        Type:Error ->
+        throw:{rproxy_connect_error, Reason} ->
+            throw({rproxy_connect_error, Reason});
+        Type:Error:Stack ->
                     error_logger:error_msg("Socket connection error: ~p ~p, ~p",
-                                           [Type, Error, erlang:get_stacktrace()])
+                                           [Type, Error, Stack])
     end;
 send_request(#client_state{proxy = #lhttpc_url{}, proxy_setup = false} = State) ->
 % use a proxy.

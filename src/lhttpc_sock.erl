@@ -65,9 +65,29 @@
 -spec connect(host(), integer(), socket_options(), timeout(), boolean()) ->
     {ok, socket()} | {error, atom()}.
 connect(Host, Port, Options, Timeout, true) ->
-    ssl:connect(Host, Port, Options, Timeout);
+    case lists:keytake(via, 1, Options) of
+      false -> ssl:connect(Host, Port, Options, Timeout);
+      {value, {via, Via}, _Options1} -> flussonic_agent_socket(Via, Host, Port, true)
+    end;
 connect(Host, Port, Options, Timeout, false) ->
-    gen_tcp:connect(Host, Port, Options, Timeout).
+    case lists:keytake(via, 1, Options) of
+      false -> gen_tcp:connect(Host, Port, Options, Timeout);
+      {value, {via, Via}, _Options1} -> flussonic_agent_socket(Via, Host, Port, false)
+    end.
+
+
+
+% we do not allow do ssl requests through agent socket
+% while agent socket itself might be opened over ssl
+flussonic_agent_socket(_Via, _Host, _Port, true) -> throw(agent_over_ssl_is_not_supported);
+flussonic_agent_socket(Via, Host, Port, false) ->
+    case rproxy:connect(Via, Host, Port) of
+        {ok, {ranch_tcp, Sock}} -> {ok, Sock};
+        {ok, {ranch_ssl, Sock}} -> {ok, {agent_ssl, Sock}}; % agent opened connection over ssl
+        {error, E} -> throw({rproxy_connect_error, E})
+    end.
+
+
 
 %%------------------------------------------------------------------------------
 %% @spec (Socket, SslFlag) -> {ok, Data} | {error, Reason}
@@ -85,6 +105,8 @@ connect(Host, Port, Options, Timeout, false) ->
 -spec recv(socket(), boolean()) ->
     {ok, any()} | {error, atom()} | {error, {http_error, string()}}.
 recv(Socket, true) ->
+    ssl:recv(Socket, 0);
+recv({agent_ssl, Socket}, false) ->
     ssl:recv(Socket, 0);
 recv(Socket, false) ->
     gen_tcp:recv(Socket, 0).
@@ -106,6 +128,8 @@ recv(_, 0, _) ->
     {ok, <<>>};
 recv(Socket, Length, true) ->
     ssl:recv(Socket, Length);
+recv({agent_ssl, Socket}, Length, false) ->
+    ssl:recv(Socket, Length);
 recv(Socket, Length, false) ->
     gen_tcp:recv(Socket, Length).
 
@@ -123,6 +147,8 @@ recv(Socket, Length, false) ->
 %%------------------------------------------------------------------------------
 -spec send(socket(), iolist() | binary(), boolean()) -> ok | {error, atom()}.
 send(Socket, Request, true) ->
+    ssl:send(Socket, Request);
+send({agent_ssl, Socket}, Request, false) ->
     ssl:send(Socket, Request);
 send(Socket, Request, false) ->
     gen_tcp:send(Socket, Request).
@@ -143,6 +169,8 @@ controlling_process(Socket, Controller, IsSsl) when is_atom(Controller) ->
     controlling_process(Socket, whereis(Controller), IsSsl);
 controlling_process(Socket, Pid, true) ->
     ssl:controlling_process(Socket, Pid);
+controlling_process({agent_ssl, Socket}, Pid, false) ->
+    ssl:controlling_process(Socket, Pid);
 controlling_process(Socket, Pid, false) ->
     gen_tcp:controlling_process(Socket, Pid).
 
@@ -159,6 +187,8 @@ controlling_process(Socket, Pid, false) ->
 -spec setopts(socket(), socket_options(), boolean()) -> ok | {error, atom()}.
 setopts(Socket, Options, true) ->
     ssl:setopts(Socket, Options);
+setopts({agent_ssl, Socket}, Options, false) ->
+    ssl:setopts(Socket, Options);
 setopts(Socket, Options, false) ->
     inet:setopts(Socket, Options).
 
@@ -173,6 +203,8 @@ setopts(Socket, Options, false) ->
 %%------------------------------------------------------------------------------
 -spec close(socket(), boolean()) -> ok | {error, atom()}.
 close(Socket, true) ->
+    ssl:close(Socket);
+close({agent_ssl, Socket}, false) ->
     ssl:close(Socket);
 close(Socket, false) ->
     gen_tcp:close(Socket).

@@ -263,7 +263,7 @@ init(Options) ->
         true ->
             % Make sure that the ssl random number generator is seeded
             % This was new in R13 (ssl-3.10.1 in R13B vs. ssl-3.10.0 in R12B-5)
-            apply(ssl, seed, [crypto:rand_bytes(255)]);
+            apply(ssl, seed, [crypto:strong_rand_bytes(255)]);
         false ->
             ok
     end,
@@ -312,11 +312,15 @@ handle_call({connection_count, Destination}, _, State) ->
 handle_call({done, Host, Port, Ssl, Socket}, {Pid, _} = From, State) ->
     gen_server:reply(From, ok),
     Dest = {Host, Port, Ssl},
-    {Dest, MonRef} = dict:fetch(Pid, State#httpc_man.clients),
-    true = erlang:demonitor(MonRef, [flush]),
-    Clients2 = dict:erase(Pid, State#httpc_man.clients),
-    State2 = deliver_socket(Socket, Dest, State#httpc_man{clients = Clients2}),
-    {noreply, State2};
+    case dict:find(Pid, State#httpc_man.clients) of
+        error ->
+            {noreply, remove_socket(Socket, State)};
+        {ok, {Dest, MonRef}} ->
+            true = erlang:demonitor(MonRef, [flush]),
+            Clients2 = dict:erase(Pid, State#httpc_man.clients),
+            State2 = deliver_socket(Socket, Dest, State#httpc_man{clients = Clients2}),
+            {noreply, State2}
+    end;
 handle_call(_, _, State) ->
     {reply, {error, unknown_request}, State}.
 
