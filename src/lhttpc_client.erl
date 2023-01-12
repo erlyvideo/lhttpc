@@ -52,7 +52,7 @@
         send_request_at,
         headers_at,
         method :: string(),
-        request :: iolist(),
+        request :: iolist() | undefined,
         request_headers :: headers(),
         socket,
         connect_timeout = infinity :: timeout(),
@@ -69,7 +69,8 @@
         %% the wire at that point or in case of chunked one chunk
         proxy :: undefined | #lhttpc_url{},
         proxy_ssl_options = [] :: [any()],
-        proxy_setup = false :: boolean()
+        proxy_setup = false :: boolean(),
+        recv_timeout = infinity :: infinity | non_neg_integer() 
     }).
 
 %%==============================================================================
@@ -195,7 +196,8 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
             PartialDownloadOptions, infinity),
         proxy = Proxy,
         proxy_setup = (Socket =/= undefined),
-        proxy_ssl_options = proplists:get_value(proxy_ssl_options, Options, [])
+        proxy_ssl_options = proplists:get_value(proxy_ssl_options, Options, []),
+        recv_timeout = proplists:get_value(recv_timeout, Options, infinity)
     },
     put(status, sending_request),
     Response = case {send_request(State), ViaOpts} of
@@ -241,8 +243,12 @@ send_request(#client_state{socket = undefined, measure_time = MeasureTime} = Sta
             ConnectOptions0
     end,
     SocketOptions = [binary, {packet, http}, {active, false} | ConnectOptions],
+    SocketOptions1 = case proplists:get_value(log_level, SocketOptions) of
+        undefined when Ssl -> [{log_level, error}|SocketOptions];
+        _ -> SocketOptions
+    end,
     put(status, connecting),
-    try lhttpc_sock:connect(Host, Port, SocketOptions, Timeout, Ssl) of
+    try lhttpc_sock:connect(Host, Port, SocketOptions1, Timeout, Ssl) of
         {ok, Socket} ->
             T3 = case MeasureTime of
                 true -> os:timestamp();
@@ -402,6 +408,7 @@ read_proxy_connect_response(State, StatusCode, StatusText) ->
 %% messages using functions in lhttpc module
 %% @end
 %%------------------------------------------------------------------------------
+-spec partial_upload(#client_state{}) -> no_return().
 partial_upload(State) ->
     Response = {ok, {self(), State#client_state.upload_window}},
     State#client_state.requester ! {response, self(), Response},
@@ -534,6 +541,7 @@ read_response(State, Vsn, {StatusCode, _} = Status, Hdrs) ->
 %%------------------------------------------------------------------------------
 -spec handle_response_body(#client_state{}, {integer(), integer()},
                 http_status(), headers()) -> {http_status(), headers(), body()} |
+                                             {no_return, headers()} |
                                              {http_status(), headers()}.
 handle_response_body(#client_state{partial_download = false} = State, Vsn,
         Status, Hdrs) ->
@@ -542,7 +550,7 @@ handle_response_body(#client_state{partial_download = false} = State, Vsn,
     Ssl = State#client_state.ssl,
     Method = State#client_state.method,
     {Body, NewHdrs} = case has_body(Method, element(1, Status), Hdrs) of
-                          true  -> read_body(Vsn, Hdrs, Ssl, Socket, body_type(Hdrs));
+                          true  -> read_body(Vsn, Hdrs, Ssl, Socket, body_type(Hdrs), State#client_state.recv_timeout);
                           false -> {<<>>, Hdrs}
                       end,
     TimeHeaders = case State#client_state.measure_time of
@@ -666,13 +674,13 @@ read_partial_body(State, _Vsn, Hdrs, {fixed_length, ContentLength}) ->
 %%% @doc Called when {partial_download, PartialDownloadOptions} option is NOT used.
 %%% @end
 %%------------------------------------------------------------------------------
-read_body(_Vsn, Hdrs, Ssl, Socket, chunked) ->
-    read_chunked_body(Socket, Ssl, Hdrs, []);
-read_body(Vsn, Hdrs, Ssl, Socket, infinite) ->
+read_body(_Vsn, Hdrs, Ssl, Socket, chunked, Timeout) ->
+    read_chunked_body(Socket, Ssl, Hdrs, [], Timeout);
+read_body(Vsn, Hdrs, Ssl, Socket, infinite, _) ->
     check_infinite_response(Vsn, Hdrs),
     read_infinite_body(Socket, Hdrs, Ssl);
-read_body(_Vsn, Hdrs, Ssl, Socket, {fixed_length, ContentLength}) ->
-    read_length(Hdrs, Ssl, Socket, ContentLength).
+read_body(_Vsn, Hdrs, Ssl, Socket, {fixed_length, ContentLength}, Timeout) ->
+    read_length(Hdrs, Ssl, Socket, ContentLength, Timeout).
 
 %%------------------------------------------------------------------------------
 %%% @private
@@ -710,25 +718,25 @@ read_partial_finite_body(State, Hdrs, ContentLength, Window) when Window >= 0->
 %%------------------------------------------------------------------------------
 %%% @private
 %%------------------------------------------------------------------------------
-read_body_part(#client_state{part_size = infinity} = State, _ContentLength) ->
-    lhttpc_sock:recv(State#client_state.socket, State#client_state.ssl);
-read_body_part(#client_state{part_size = PartSize} = State, ContentLength)
+read_body_part(#client_state{part_size = infinity, recv_timeout = Timeout} = State, _ContentLength) ->
+    lhttpc_sock:recv_with_timeout(State#client_state.socket, State#client_state.ssl, Timeout);
+read_body_part(#client_state{part_size = PartSize, recv_timeout = Timeout} = State, ContentLength)
         when PartSize =< ContentLength ->
     Socket = State#client_state.socket,
     Ssl = State#client_state.ssl,
     PartSize = State#client_state.part_size,
-    lhttpc_sock:recv(Socket, PartSize, Ssl);
-read_body_part(#client_state{part_size = PartSize} = State, ContentLength)
+    lhttpc_sock:recv_with_timeout(Socket, PartSize, Ssl, Timeout);
+read_body_part(#client_state{part_size = PartSize, recv_timeout = Timeout} = State, ContentLength)
         when PartSize > ContentLength ->
     Socket = State#client_state.socket,
     Ssl = State#client_state.ssl,
-    lhttpc_sock:recv(Socket, ContentLength, Ssl).
+    lhttpc_sock:recv_with_timeout(Socket, ContentLength, Ssl, Timeout).
 
 %%------------------------------------------------------------------------------
 %%% @private
 %%------------------------------------------------------------------------------
-read_length(Hdrs, Ssl, Socket, Length) ->
-    case lhttpc_sock:recv(Socket, Length, Ssl) of
+read_length(Hdrs, Ssl, Socket, Length ,Timeout) ->
+    case lhttpc_sock:recv_with_timeout(Socket, Length, Ssl, Timeout) of
         {ok, Data} ->
             {Data, Hdrs};
         {error, Reason} ->
@@ -742,22 +750,22 @@ read_partial_chunked_body(State, Hdrs, Window, BufferSize, Buffer, 0) ->
     Socket = State#client_state.socket,
     Ssl = State#client_state.ssl,
     PartSize = State#client_state.part_size,
-    case read_chunk_size(Socket, Ssl) of
+    case read_chunk_size(Socket, Ssl, State#client_state.recv_timeout) of
         0 ->
             reply_chunked_part(State, Buffer, Window),
-            {Trailers, NewHdrs} = read_trailers(Socket, Ssl, [], Hdrs),
+            {Trailers, NewHdrs} = read_trailers(Socket, Ssl, [], Hdrs, State#client_state.recv_timeout),
             reply_end_of_body(State, Trailers, NewHdrs);
         ChunkSize when PartSize =:= infinity ->
-            Chunk = read_chunk(Socket, Ssl, ChunkSize),
+            Chunk = read_chunk(Socket, Ssl, ChunkSize, State#client_state.recv_timeout),
             NewWindow = reply_chunked_part(State, [Chunk | Buffer], Window),
             read_partial_chunked_body(State, Hdrs, NewWindow, 0, [], 0);
         ChunkSize when BufferSize + ChunkSize >= PartSize ->
             {Chunk, RemSize} = read_partial_chunk(Socket, Ssl,
-                PartSize - BufferSize, ChunkSize),
+                PartSize - BufferSize, ChunkSize, State#client_state.recv_timeout),
             NewWindow = reply_chunked_part(State, [Chunk | Buffer], Window),
             read_partial_chunked_body(State, Hdrs, NewWindow, 0, [], RemSize);
         ChunkSize ->
-            Chunk = read_chunk(Socket, Ssl, ChunkSize),
+            Chunk = read_chunk(Socket, Ssl, ChunkSize, State#client_state.recv_timeout),
             read_partial_chunked_body(State, Hdrs, Window,
                 BufferSize + ChunkSize, [Chunk | Buffer], 0)
     end;
@@ -768,12 +776,12 @@ read_partial_chunked_body(State, Hdrs, Window, BufferSize, Buffer, RemSize) ->
     if
         BufferSize + RemSize >= PartSize ->
             {Chunk, NewRemSize} =
-                read_partial_chunk(Socket, Ssl, PartSize - BufferSize, RemSize),
+                read_partial_chunk(Socket, Ssl, PartSize - BufferSize, RemSize, State#client_state.recv_timeout),
             NewWindow = reply_chunked_part(State, [Chunk | Buffer], Window),
             read_partial_chunked_body(State, Hdrs, NewWindow, 0, [],
                 NewRemSize);
         BufferSize + RemSize < PartSize ->
-            Chunk = read_chunk(Socket, Ssl, RemSize),
+            Chunk = read_chunk(Socket, Ssl, RemSize, State#client_state.recv_timeout),
             read_partial_chunked_body(State, Hdrs, Window, BufferSize + RemSize,
                 [Chunk | Buffer], 0)
     end.
@@ -781,9 +789,9 @@ read_partial_chunked_body(State, Hdrs, Window, BufferSize, Buffer, RemSize) ->
 %%------------------------------------------------------------------------------
 %%% @private
 %%------------------------------------------------------------------------------
-read_chunk_size(Socket, Ssl) ->
+read_chunk_size(Socket, Ssl, Timeout) ->
     lhttpc_sock:setopts(Socket, [{packet, line}], Ssl),
-    case lhttpc_sock:recv(Socket, Ssl) of
+    case lhttpc_sock:recv_with_timeout(Socket, Ssl, Timeout) of
         {ok, ChunkSizeExt} ->
             chunk_size(ChunkSizeExt);
         {error, Reason} ->
@@ -814,15 +822,15 @@ reply_chunked_part(#client_state{requester = Pid}, Buffer, Window) ->
 %%------------------------------------------------------------------------------
 %%% @private
 %%------------------------------------------------------------------------------
-read_chunked_body(Socket, Ssl, Hdrs, Chunks) ->
-    case read_chunk_size(Socket, Ssl) of
+read_chunked_body(Socket, Ssl, Hdrs, Chunks, Timeout) ->
+    case read_chunk_size(Socket, Ssl, Timeout) of
         0 ->
             Body = list_to_binary(lists:reverse(Chunks)),
-            {_, NewHdrs} = read_trailers(Socket, Ssl, [], Hdrs),
+            {_, NewHdrs} = read_trailers(Socket, Ssl, [], Hdrs, Timeout),
             {Body, NewHdrs};
         Size ->
-            Chunk = read_chunk(Socket, Ssl, Size),
-            read_chunked_body(Socket, Ssl, Hdrs, [Chunk | Chunks])
+            Chunk = read_chunk(Socket, Ssl, Size, Timeout),
+            read_chunked_body(Socket, Ssl, Hdrs, [Chunk | Chunks], Timeout)
     end.
 
 %%------------------------------------------------------------------------------
@@ -847,11 +855,11 @@ chunk_size(<<Char, Binary/binary>>, Chars) ->
 %%------------------------------------------------------------------------------
 %%% @private
 %%------------------------------------------------------------------------------
-read_partial_chunk(Socket, Ssl, ChunkSize, ChunkSize) ->
-    {read_chunk(Socket, Ssl, ChunkSize), 0};
-read_partial_chunk(Socket, Ssl, Size, ChunkSize) ->
+read_partial_chunk(Socket, Ssl, ChunkSize, ChunkSize, Timeout) ->
+    {read_chunk(Socket, Ssl, ChunkSize, Timeout), 0};
+read_partial_chunk(Socket, Ssl, Size, ChunkSize, Timeout) ->
     lhttpc_sock:setopts(Socket, [{packet, raw}], Ssl),
-    case lhttpc_sock:recv(Socket, Size, Ssl) of
+    case lhttpc_sock:recv_with_timeout(Socket, Size, Ssl, Timeout) of
         {ok, Chunk} ->
             {Chunk, ChunkSize - Size};
         {error, Reason} ->
@@ -861,9 +869,9 @@ read_partial_chunk(Socket, Ssl, Size, ChunkSize) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-read_chunk(Socket, Ssl, Size) ->
+read_chunk(Socket, Ssl, Size, Timeout) ->
     lhttpc_sock:setopts(Socket, [{packet, raw}], Ssl),
-    case lhttpc_sock:recv(Socket, Size + 2, Ssl) of
+    case lhttpc_sock:recv_with_timeout(Socket, Size + 2, Ssl, Timeout) of
         {ok, <<Chunk:Size/binary, "\r\n">>} ->
             Chunk;
         {ok, Data} ->
@@ -875,16 +883,16 @@ read_chunk(Socket, Ssl, Size) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
--spec read_trailers(socket(), boolean(), any(), any()) ->
+-spec read_trailers(socket(), boolean(), any(), any(), infinity | integer()) ->
                            {any(), any()} | no_return().
-read_trailers(Socket, Ssl, Trailers, Hdrs) ->
+read_trailers(Socket, Ssl, Trailers, Hdrs, Timeout) ->
     lhttpc_sock:setopts(Socket, [{packet, httph}], Ssl),
-    case lhttpc_sock:recv(Socket, Ssl) of
+    case lhttpc_sock:recv_with_timeout(Socket, Ssl, Timeout) of
         {ok, http_eoh} ->
             {Trailers, Hdrs};
         {ok, {http_header, _, Name, _, Value}} ->
             Header = {lhttpc_lib:maybe_atom_to_list(Name), Value},
-            read_trailers(Socket, Ssl, [Header | Trailers], [Header | Hdrs]);
+            read_trailers(Socket, Ssl, [Header | Trailers], [Header | Hdrs], Timeout);
         {error, {http_error, Data}} ->
             erlang:error({bad_trailer, Data})
     end.
@@ -927,8 +935,8 @@ read_partial_infinite_body(State = #client_state{requester = To}, Hdrs, Window)
 %% @private
 %%------------------------------------------------------------------------------
 -spec read_infinite_body_part(#client_state{}) -> bodypart() | no_return().
-read_infinite_body_part(#client_state{socket = Socket, ssl = Ssl}) ->
-    case lhttpc_sock:recv(Socket, Ssl) of
+read_infinite_body_part(#client_state{socket = Socket, ssl = Ssl, recv_timeout = Timeout}) ->
+    case lhttpc_sock:recv_with_timeout(Socket, Ssl, Timeout) of
         {ok, Data} ->
             Data;
         {error, closed} ->

@@ -41,6 +41,9 @@
 -export([start_link/0, start_link/1,
          client_count/1,
          connection_count/1, connection_count/2,
+         queue_size/1, queue_size/2, get_connection_status/1,
+         start_collect_statistic/2,
+         sockets_by_host/1,
          update_connection_timeout/2,
          dump_settings/1,
          list_pools/0,
@@ -63,13 +66,17 @@
 -include("lhttpc_types.hrl").
 -include("lhttpc.hrl").
 
+-type host_port() :: {binary() | string(), integer(), boolean()}.%% {host, port, is_ssl}
+
 -record(httpc_man, {
         destinations = dict:new(),
         sockets = dict:new(),
         clients = dict:new(), % Pid => {Dest, MonRef}
         queues = dict:new(),  % Dest => queue of Froms
         max_pool_size = 50 :: non_neg_integer(),
-        timeout = 300000 :: non_neg_integer()
+        timeout = 300000 :: non_neg_integer(),
+        collect_statistic = false :: boolean(),
+        connect_state = #{} :: #{host_port() => [#{client => pid(), time_start => integer()}]}
     }).
 
 %%==============================================================================
@@ -150,6 +157,19 @@ connection_count(PidOrName, {Host, Port, Ssl}) ->
     gen_server:call(PidOrName, {connection_count, Destination}).
 
 %%------------------------------------------------------------------------------
+%% @spec (PoolPidOrName, Destination) -> Count
+%%    PoolPidOrName = pid() | atom()
+%%    Count = integer()
+%% @doc Returns the number of active connections to the specific
+%% `Destination' maintained by the httpc manager.
+%% @end
+%%------------------------------------------------------------------------------
+-spec sockets_by_host(pool_id()) -> [{{string(), integer()}, Count :: integer()}].
+sockets_by_host(PidOrName) ->
+    gen_server:call(PidOrName, sockets_by_host).
+
+
+%%------------------------------------------------------------------------------
 %% @spec (PoolPidOrName, Timeout) -> ok
 %%    PoolPidOrName = pid() | atom()
 %%    Timeout = integer()
@@ -161,6 +181,37 @@ connection_count(PidOrName, {Host, Port, Ssl}) ->
 -spec update_connection_timeout(pool_id(), non_neg_integer()) -> ok.
 update_connection_timeout(PidOrName, Milliseconds) ->
     gen_server:cast(PidOrName, {update_timeout, Milliseconds}).
+
+%%------------------------------------------------------------------------------
+%% @spec (PoolPidOrName) -> Count
+%%    Count = integer()
+%% @doc Returns the total size of queue clients by the
+%% specified lhttpc pool (manager).
+%% @end
+%%------------------------------------------------------------------------------
+-spec queue_size(pool_id()) -> non_neg_integer().
+queue_size(PidOrName) ->
+    gen_server:call(PidOrName, queue_size).
+
+-spec queue_size(pool_id(),  destination()) -> non_neg_integer().
+queue_size(PidOrName,  {Host, Port, Ssl}) ->
+    Destination = {string:to_lower(Host), Port, Ssl},
+    gen_server:call(PidOrName, {queue_size, Destination}).
+
+%%------------------------------------------------------------------------------
+%% @spec (PoolPidOrName) -> Count
+%%    Count = integer()
+%% @doc Returns the total size of queue clients by the
+%% specified lhttpc pool (manager).
+%% @end
+%%------------------------------------------------------------------------------
+-spec get_connection_status(pool_id()) -> non_neg_integer().
+get_connection_status(PidOrName) ->
+    gen_server:call(PidOrName, get_connection_status).
+
+-spec start_collect_statistic(pool_id(), boolean()) -> ok.
+start_collect_statistic(PidOrName, Flag) ->
+    gen_server:cast(PidOrName, {start_collect_statistic, Flag}).
 
 %%------------------------------------------------------------------------------
 %% @spec () -> {ok, pid()}
@@ -180,7 +231,7 @@ start_link() ->
 -spec start_link([{atom(), non_neg_integer()}]) ->
     {ok, pid()} | {error, already_started}.
 start_link(Options0) ->
-    Options = maybe_apply_defaults([connection_timeout, pool_size], Options0),
+    Options = maybe_apply_defaults([connection_timeout, pool_size, collect_statistic], Options0),
     case proplists:get_value(name, Options) of
         undefined ->
             gen_server:start_link(?MODULE, Options, []);
@@ -269,7 +320,8 @@ init(Options) ->
     end,
     Timeout = proplists:get_value(connection_timeout, Options),
     Size = proplists:get_value(pool_size, Options),
-    {ok, #httpc_man{timeout = Timeout, max_pool_size = Size}}.
+    CollectStats = proplists:get_value(collect_statistic, Options, false),
+    {ok, #httpc_man{timeout = Timeout, max_pool_size = Size, collect_statistic = CollectStats}}.
 
 %%------------------------------------------------------------------------------
 %% @hidden
@@ -287,39 +339,75 @@ handle_call({socket, Pid, Host, Port, Ssl}, {Pid, _Ref} = From, State) ->
     case Reply0 of
         {ok, _Socket} ->
             State3 = monitor_client(Dest, From, State2),
-            {reply, Reply0, State3};
+            {reply, Reply0, update_statistic(Dest, Pid, State3)};
         no_socket ->
             case dict:size(Clients) >= MaxSize of
                 true ->
                     Queues2 = add_to_queue(Dest, From, Queues),
                     {noreply, State2#httpc_man{queues = Queues2}};
                 false ->
-                    {reply, no_socket, monitor_client(Dest, From, State2)}
+                    {reply, no_socket, update_statistic(Dest, Pid, monitor_client(Dest, From, State2))}
             end
     end;
 handle_call(dump_settings, _, State) ->
-    {reply, [{max_pool_size, State#httpc_man.max_pool_size}, {timeout, State#httpc_man.timeout}], State};
+    {reply, [{max_pool_size, State#httpc_man.max_pool_size}, {timeout, State#httpc_man.timeout}, {collect_statistic, State#httpc_man.collect_statistic}], State};
 handle_call(client_count, _, State) ->
     {reply, dict:size(State#httpc_man.clients), State};
 handle_call(connection_count, _, State) ->
     {reply, dict:size(State#httpc_man.sockets), State};
+handle_call(sockets_by_host, _, State) ->
+    Reply = lists:map(
+        fun({{Host, Port, _}, Sockets}) -> 
+            {{Host, Port}, length(Sockets)}
+        end, dict:to_list(State#httpc_man.destinations)),
+    {reply, Reply, State};
 handle_call({connection_count, Destination}, _, State) ->
     Count = case dict:find(Destination, State#httpc_man.destinations) of
         {ok, Sockets} -> length(Sockets);
         error         -> 0
     end,
     {reply, Count, State};
+handle_call(queue_size, _, #httpc_man{queues = Queues} = State) ->
+    Size = case Queues of
+                undefined -> 0;
+                _ -> lists:sum(lists:map(fun({_, Q}) -> queue:len(Q) end, dict:to_list(Queues)))
+            end,
+    {reply, Size, State};
+handle_call({queue_size, Destination}, _, #httpc_man{queues = Queues} = State) ->
+    {reply, get_queue_size_by_destination(Queues, Destination), State};
+handle_call(get_connection_status, _, #httpc_man{connect_state = ConState, queues = Queues} = State) ->
+    Now = erlang:system_time(millisecond),
+    Reply =
+        erlang:iolist_to_binary(lists:flatmap(
+        fun({{Host, Port, _} = Dest, Conns}) ->
+            {LeftTimes, PidCnt} = 
+                lists:foldl(
+                    fun({Pid, TimeStart}, {Times, Cnt}) ->
+                        {[{Pid, Now - TimeStart} | Times], Cnt + 1}
+                    end, {[], 0}, Conns),
+            QueueSize = get_queue_size_by_destination(Queues, Dest),
+            OpenSockets = 
+                case dict:find(Dest, State#httpc_man.destinations) of
+                    {ok, Sockets} -> length(Sockets);
+                    error         -> 0
+                end,
+            Top10 = 
+                iolist_to_binary(io_lib:format("~p", [(get_top_processes(lists:sort(fun({_, A}, {_, B}) -> A >= B end, LeftTimes), 10, []))])),
+            io_lib:format("host: ~ts, port: ~w, count requests: ~w open sockets: ~w queue_size: ~w top10 oldest requests: ~s~n", [Host, Port, PidCnt, OpenSockets, QueueSize, Top10])
+        end, maps:to_list(ConState))),
+    {reply, binary:replace(Reply, <<"\n">>, <<10>>, [global]), State};
 handle_call({done, Host, Port, Ssl, Socket}, {Pid, _} = From, State) ->
     gen_server:reply(From, ok),
     Dest = {Host, Port, Ssl},
-    case dict:find(Pid, State#httpc_man.clients) of
+    State2 = erase_statistic(Pid, Dest, State),
+    case dict:find(Pid, State2#httpc_man.clients) of
         error ->
-            {noreply, remove_socket(Socket, State)};
+            {noreply, remove_socket(Socket, State2)};
         {ok, {Dest, MonRef}} ->
             true = erlang:demonitor(MonRef, [flush]),
-            Clients2 = dict:erase(Pid, State#httpc_man.clients),
-            State2 = deliver_socket(Socket, Dest, State#httpc_man{clients = Clients2}),
-            {noreply, State2}
+            Clients2 = dict:erase(Pid, State2#httpc_man.clients),
+            State3 = deliver_socket(Socket, Dest, State2#httpc_man{clients = Clients2}),
+            {noreply, State3}
     end;
 handle_call(_, _, State) ->
     {reply, {error, unknown_request}, State}.
@@ -332,6 +420,8 @@ handle_cast({update_timeout, Milliseconds}, State) ->
     {noreply, State#httpc_man{timeout = Milliseconds}};
 handle_cast({set_max_pool_size, Size}, State) ->
     {noreply, State#httpc_man{max_pool_size = Size}};
+handle_cast({start_collect_statistic, Flag}, State) ->
+    {noreply, State#httpc_man{collect_statistic = Flag}};
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -356,13 +446,14 @@ handle_info({ssl, Socket, _}, State) ->
 handle_info({'DOWN', MonRef, process, Pid, _Reason}, State) ->
     {Dest, MonRef} = dict:fetch(Pid, State#httpc_man.clients),
     Clients2 = dict:erase(Pid, State#httpc_man.clients),
-    case queue_out(Dest, State#httpc_man.queues) of
+    State2 = erase_statistic(Pid, Dest, State),
+    case queue_out(Dest, State2#httpc_man.queues) of
         empty ->
-            {noreply, State#httpc_man{clients = Clients2}};
+            {noreply, State2#httpc_man{clients = Clients2}};
         {ok, From, Queues2} ->
             gen_server:reply(From, no_socket),
-            State2 = State#httpc_man{queues = Queues2, clients = Clients2},
-            {noreply, monitor_client(Dest, From, State2)}
+            State3 = State2#httpc_man{queues = Queues2, clients = Clients2},
+            {noreply, monitor_client(Dest, From, State3)}
     end;
 handle_info(_, State) ->
     {noreply, State}.
@@ -548,6 +639,50 @@ maybe_apply_defaults([OptName | Rest], Options) ->
         true ->
             maybe_apply_defaults(Rest, Options);
         false ->
-            {ok, Default} = application:get_env(lhttpc, OptName),
+            Default = application:get_env(lhttpc, OptName, undefined),
             maybe_apply_defaults(Rest, [{OptName, Default} | Options])
+    end.
+
+
+update_statistic(Dest, Pid, #httpc_man{collect_statistic = true, connect_state = OldState} = State) ->
+    State#httpc_man{connect_state = maps:put(Dest, [get_conn_data(Pid) | maps:get(Dest, OldState, [])], OldState)};
+
+update_statistic(_Dest, _Pid, #httpc_man{} = State) ->
+    State.
+
+get_conn_data(Pid) ->
+    {Pid, erlang:system_time(millisecond)}.
+
+erase_statistic(Pid, Dest,  #httpc_man{collect_statistic = true, connect_state = OldState} = State) ->
+    case maps:take(Dest, OldState) of 
+        {Value, Map2} -> 
+            case lists:keydelete(Pid, 1, Value) of
+                [] -> State#httpc_man{connect_state = Map2};
+                Rest -> State#httpc_man{connect_state = Map2#{Dest => Rest}}
+            end;
+        error -> State
+    end;
+
+erase_statistic(_Pid, _Dest,  State) ->
+    State.
+
+get_queue_size_by_destination(Queues, Destination) ->
+    case dict:find(Destination, Queues) of
+        {ok, Sockets} -> queue:len(Sockets);
+        error         -> 0
+    end.
+
+get_top_processes([], _, Acc) -> lists:reverse(Acc);
+get_top_processes(_, 0, Acc) -> lists:reverse(Acc);
+get_top_processes([{Pid, H} | T], Cnt, Acc) ->
+    get_top_processes(T, Cnt - 1, [proc_info(Pid, H) | Acc]).
+
+proc_info(Pid, Time) ->
+    case erlang:process_info(Pid) of
+        I when is_list(I) ->     
+            {Pid, Time, lists:filter(
+                fun({K, _V}) ->
+                    lists:member(K, [dictionary, current_function, total_heap_size, links, reductions])
+                end, I)};
+        _ -> [Pid, Time, []]
     end.

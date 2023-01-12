@@ -35,7 +35,7 @@
 
 -export([start/0, stop/0, start/2, stop/1,
          request/4, request/5, request/6, request/9,
-         add_pool/1, add_pool/2, add_pool/3,
+         add_pool/1, add_pool/2, add_pool/3, add_pool/4,
          delete_pool/1,
          send_body_part/2, send_body_part/3,
          send_trailers/2, send_trailers/3,
@@ -44,6 +44,7 @@
 
 -include("lhttpc_types.hrl").
 -include("lhttpc.hrl").
+-export_type([upload_state/0]).
 
 %%==============================================================================
 %% Exported functions
@@ -106,9 +107,11 @@ stop() ->
 add_pool(Name) when is_atom(Name) ->
     {ok, ConnTimeout} = application:get_env(lhttpc, connection_timeout),
     {ok, PoolSize} = application:get_env(lhttpc, pool_size),
+    IsCollect = application:get_env(lhttpc, collect_statistic, false),
     add_pool(Name,
              ConnTimeout,
-             PoolSize).
+             PoolSize,
+             IsCollect).
 
 %%------------------------------------------------------------------------------
 %% @doc Add a new httpc_manager to the supervisor tree
@@ -119,19 +122,32 @@ add_pool(Name, ConnTimeout) when is_atom(Name),
                                  is_integer(ConnTimeout),
                                  ConnTimeout > 0 ->
     {ok, PoolSize} = application:get_env(lhttpc, pool_size),
-    add_pool(Name, ConnTimeout, PoolSize).
+    IsCollect = application:get_env(lhttpc, collect_statistic, false),
+    add_pool(Name, ConnTimeout, PoolSize, IsCollect).
 
 %%------------------------------------------------------------------------------
 %% @doc Add a new httpc_manager to the supervisor tree
 %% @end
 %%------------------------------------------------------------------------------
--spec add_pool(atom(), non_neg_integer(), poolsize()) ->
+-spec add_pool(atom(), non_neg_integer(), poolsize()) -> {ok, pid()} | {error, term()}.
+add_pool(Name, ConnTimeout, PoolSize) when is_atom(Name),
+  is_integer(ConnTimeout),
+  ConnTimeout > 0 ->
+  IsCollect = application:get_env(lhttpc, collect_statistic, false),
+  add_pool(Name, ConnTimeout, PoolSize, IsCollect).
+
+%%------------------------------------------------------------------------------
+%% @doc Add a new httpc_manager to the supervisor tree
+%% @end
+%%------------------------------------------------------------------------------
+-spec add_pool(atom(), non_neg_integer(), poolsize(), boolean()) ->
           {ok, pid()} | {error, term()}.
-add_pool(Name, ConnTimeout, PoolSize) ->
+add_pool(Name, ConnTimeout, PoolSize, IsCollect) ->
     ChildSpec = {Name,
                  {lhttpc_manager, start_link, [[{name, Name},
                                                 {connection_timeout, ConnTimeout},
-                                                {pool_size, PoolSize}]]},
+                                                {pool_size, PoolSize},
+                                                {collect_statistic, IsCollect}]]},
                  permanent, 10000, worker, [lhttpc_manager]},
     case supervisor:start_child(lhttpc_sup, ChildSpec) of
         {error, {already_started, _Pid}} ->
@@ -698,6 +714,9 @@ verify_options([{pool_ensure, Bool} | Options])
 verify_options([{pool_connection_timeout, Size} | Options])
         when is_integer(Size) ->
     verify_options(Options);
+verify_options([{recv_timeout, Timeout} | Options])
+  when is_integer(Timeout) ->
+  verify_options(Options);
 verify_options([{pool_max_size, Size} | Options])
         when is_integer(Size) orelse
              Size =:= infinity->

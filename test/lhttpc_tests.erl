@@ -24,7 +24,7 @@
 %%% ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 %%% ----------------------------------------------------------------------------
 
-%%% @author Oscar Hellström <oscar@hellstrom.st>
+%%% @author Oscar Hellstrï¿½m <oscar@hellstrom.st>
 -module(lhttpc_tests).
 
 -export([test_no/2]).
@@ -452,7 +452,7 @@ persistent_connection() ->
 request_timeout() ->
     Port = start(gen_tcp, [fun very_slow_response/5]),
     URL = url(Port, "/slow"),
-    ?assertEqual({error, timeout}, lhttpc:request(URL, get, [], 50)).
+  ?assertMatch({error, {timeout,{status,_}}}, lhttpc:request(URL, get, [], 50)).
 
 connection_timeout() ->
     Port = start(gen_tcp, [fun simple_response/5, fun simple_response/5]),
@@ -474,7 +474,7 @@ suspended_manager() ->
     ?assertEqual(<<?DEFAULT_STRING>>, body(FirstResponse)),
     Pid = whereis(lhttpc_manager),
     true = erlang:suspend_process(Pid),
-    ?assertEqual({error, timeout}, lhttpc:request(URL, get, [], 50)),
+    ?assertMatch({error, {timeout,{status,_}}}, lhttpc:request(URL, get, [], 50)),
     true = erlang:resume_process(Pid),
     ?assertEqual(1,
         lhttpc_manager:connection_count(lhttpc_manager, {"localhost", Port, false})),

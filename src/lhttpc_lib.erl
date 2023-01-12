@@ -226,11 +226,14 @@ split_credentials(CredsHostPortPath) ->
             case string:tokens(Creds, ":") of
                 [User] ->
                     % RFC1738 says ":password" is optional
-                    {http_uri:decode(User), "", HostPortPath};
+                    {urldecode(User), "", HostPortPath};
                 [User, Passwd] ->
-                    {http_uri:decode(User), http_uri:decode(Passwd), HostPortPath}
+                    {urldecode(User), urldecode(Passwd), HostPortPath}
             end
     end.
+
+urldecode(String) ->
+    binary_to_list(cow_qs:urldecode(iolist_to_binary(String))).
 
 %%------------------------------------------------------------------------------
 %% @private
@@ -365,13 +368,21 @@ add_mandatory_hdrs(Method, Hdrs, Host, Port, Body, PartialUpload) ->
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec add_content_headers(string(), headers(), iolist(), boolean()) -> headers().
+-spec add_content_headers(string(), headers(), binary() | iolist(), boolean()) -> headers().
 add_content_headers("POST", Hdrs, Body, PartialUpload) ->
     add_content_headers(Hdrs, Body, PartialUpload);
 add_content_headers("PUT", Hdrs, Body, PartialUpload) ->
     add_content_headers(Hdrs, Body, PartialUpload);
 add_content_headers("PATCH", Hdrs, Body, PartialUpload) ->
     add_content_headers(Hdrs, Body, PartialUpload);
+add_content_headers("DELETE", Hdrs, Body, PartialUpload) ->
+    case iolist_size(Body) of
+        S when S > 0 ->
+            % need Content-Length if body provided
+            add_content_headers(Hdrs, Body, PartialUpload);
+        _ ->
+            Hdrs
+    end;
 add_content_headers(_, Hdrs, _, _PartialUpload) ->
     Hdrs.
 
@@ -380,7 +391,7 @@ add_content_headers(_, Hdrs, _, _PartialUpload) ->
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec add_content_headers(headers(), iolist(), boolean()) -> headers().
+-spec add_content_headers(headers(), binary() | iolist(), boolean()) -> headers().
 add_content_headers(Hdrs, Body, false) ->
     case header_value("content-length", Hdrs) of
         undefined ->

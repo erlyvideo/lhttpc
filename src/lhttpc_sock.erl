@@ -34,7 +34,7 @@
 -module(lhttpc_sock).
 
 -export([connect/5,
-         recv/2, recv/3,
+         recv/2, recv/3, recv_with_timeout/3, recv_with_timeout/4,
          send/3,
          controlling_process/3,
          setopts/3,
@@ -67,20 +67,19 @@
 connect(Host, Port, Options, Timeout, true) ->
     case lists:keytake(via, 1, Options) of
       false -> ssl:connect(Host, Port, Options, Timeout);
-      {value, {via, Via}, _Options1} -> flussonic_agent_socket(Via, Host, Port, true)
+      {value, {via, _}, _Options1} -> throw(agent_over_ssl_is_not_supported)
     end;
 connect(Host, Port, Options, Timeout, false) ->
     case lists:keytake(via, 1, Options) of
       false -> gen_tcp:connect(Host, Port, Options, Timeout);
-      {value, {via, Via}, _Options1} -> flussonic_agent_socket(Via, Host, Port, false)
+      {value, {via, Via}, _Options1} -> flussonic_agent_socket(Via, Host, Port)
     end.
 
 
 
 % we do not allow do ssl requests through agent socket
 % while agent socket itself might be opened over ssl
-flussonic_agent_socket(_Via, _Host, _Port, true) -> throw(agent_over_ssl_is_not_supported);
-flussonic_agent_socket(Via, Host, Port, false) ->
+flussonic_agent_socket(Via, Host, Port) ->
     case rproxy:connect(Via, Host, Port) of
         {ok, {ranch_tcp, Sock}} -> {ok, Sock};
         {ok, {ranch_ssl, Sock}} -> {ok, {agent_ssl, Sock}}; % agent opened connection over ssl
@@ -132,6 +131,52 @@ recv({agent_ssl, Socket}, Length, false) ->
     ssl:recv(Socket, Length);
 recv(Socket, Length, false) ->
     gen_tcp:recv(Socket, Length).
+
+%%------------------------------------------------------------------------------
+%% @spec (Socket, Length, SslFlag) -> {ok, Data} | {error, Reason}
+%%   Socket = socket()
+%%   Length = integer()
+%%   SslFlag = boolean()
+%%   TImeout = integer()
+%%   Data = term()
+%%   Reason = atom()
+%% @doc
+%% Receives available bytes from `Socket' with 'Timeout'.
+%% Will block untill `Length' bytes is available.
+%% @end
+%%------------------------------------------------------------------------------
+-spec recv_with_timeout(socket(), boolean(), integer()) -> {ok, any()} | {error, atom()} | {error, {http_error,iolist()}}.
+recv_with_timeout(_, 0, _) ->
+  {ok, <<>>};
+recv_with_timeout(Socket, true, Timeout) ->
+  ssl:recv(Socket, 0, Timeout);
+recv_with_timeout({agent_ssl, Socket}, false, Timeout) ->
+  ssl:recv(Socket, 0, Timeout);
+recv_with_timeout(Socket, false, Timeout) ->
+  gen_tcp:recv(Socket, 0, Timeout).
+
+%%------------------------------------------------------------------------------
+%% @spec (Socket, Length, SslFlag) -> {ok, Data} | {error, Reason}
+%%   Socket = socket()
+%%   Length = integer()
+%%   SslFlag = boolean()
+%%   TImeout = integer()
+%%   Data = term()
+%%   Reason = atom()
+%% @doc
+%% Receives `Length' bytes from `Socket' with 'Timeout'.
+%% Will block untill `Length' bytes is available.
+%% @end
+%%------------------------------------------------------------------------------
+-spec recv_with_timeout(socket(), integer(), boolean(), integer()) -> {ok, any()} | {error, atom()}.
+recv_with_timeout(_, 0, _, _) ->
+  {ok, <<>>};
+recv_with_timeout(Socket, Length, true, Timeout) ->
+  ssl:recv(Socket, Length, Timeout);
+recv_with_timeout({agent_ssl, Socket}, Length, false, Timeout) ->
+  ssl:recv(Socket, Length, Timeout);
+recv_with_timeout(Socket, Length, false, Timeout) ->
+  gen_tcp:recv(Socket, Length, Timeout).
 
 %%------------------------------------------------------------------------------
 %% @spec (Socket, Data, SslFlag) -> ok | {error, Reason}
