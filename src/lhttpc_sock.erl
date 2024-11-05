@@ -62,8 +62,8 @@
 %% `Options' are the normal `gen_tcp' or `ssl' Options.
 %% @end
 %%------------------------------------------------------------------------------
--spec connect(host(), integer(), socket_options(), timeout(), boolean()) ->
-    {ok, socket()} | {error, atom()}.
+% -spec connect(host(), integer(), socket_options(), timeout(), boolean()) ->
+%     {ok, socket()} | {error, atom()}.
 connect(Host, Port, Options, Timeout, true) ->
     case lists:keytake(via, 1, Options) of
       false -> ssl:connect(Host, Port, Options, Timeout);
@@ -83,7 +83,7 @@ flussonic_agent_socket(Via, Host, Port) ->
     case rproxy:connect(Via, Host, Port) of
         {ok, {ranch_tcp, Sock}} -> {ok, Sock};
         {ok, {ranch_ssl, Sock}} -> {ok, {agent_ssl, Sock}}; % agent opened connection over ssl
-        {error, E} -> throw({rproxy_connect_error, E})
+        {error, #{reason := _} = E} -> throw({error, E#{context => rproxy}})
     end.
 
 

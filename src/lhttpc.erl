@@ -53,8 +53,8 @@
 %%------------------------------------------------------------------------------
 %% @hidden
 %%------------------------------------------------------------------------------
--spec start(normal | {takeover, node()} | {failover, node()}, any()) ->
-    {ok, pid()}.
+% -spec start(normal | {takeover, node()} | {failover, node()}, any()) ->
+%     {ok, pid()}.
 start(_, _) ->
     lhttpc_sup:start_link().
 
@@ -164,7 +164,7 @@ add_pool(Name, ConnTimeout, PoolSize, IsCollect) ->
 %% @doc Delete a pool
 %% @end
 %%------------------------------------------------------------------------------
--spec delete_pool(atom() | pid()) -> ok.
+% -spec delete_pool(atom() | pid()) -> ok.
 delete_pool(PoolPid) when is_pid(PoolPid) ->
     {registered_name, Name} = erlang:process_info(PoolPid, registered_name),
     delete_pool(Name);
@@ -674,9 +674,9 @@ kill_client(Pid) ->
             erlang:demonitor(Monitor, [flush]),
             R;
         {'DOWN', _, process, Pid, Reason} when Status =/= noproc ->
-            {error, {Reason, {status,Status}}};
+            {error, #{reason => Reason, while => Status}};
         {'DOWN', _, process, Pid, Reason} ->
-            {error, Reason}
+            {error, #{reason => Reason}}
     end.
 
 %%------------------------------------------------------------------------------

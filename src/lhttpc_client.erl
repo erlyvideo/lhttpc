@@ -38,6 +38,9 @@
 -include("lhttpc_types.hrl").
 -include("lhttpc.hrl").
 
+% FIXME: change this to a properly nested call without throw.
+-dialyzer({[no_fail_call, no_contracts, no_return], [send_request/1, read_response/4]}).
+
 -define(CONNECTION_HDR(HDRS, DEFAULT),
     string:to_lower(lhttpc_lib:header_value("connection", HDRS, DEFAULT))).
 
@@ -258,23 +261,18 @@ send_request(#client_state{socket = undefined, measure_time = MeasureTime} = Sta
             send_request(State#client_state{socket = Socket, connected_at = T3});
         {error, etimedout} ->
             % TCP stack decided to give up
-            throw(connect_timeout);
+            throw(#{reason => connect_timeout, while => connecting});
         {error, timeout} ->
-            throw(connect_timeout);
+            throw(#{reason => connect_timeout, while => connecting});
         {error, 'record overflow'} ->
-            throw(ssl_error);
-        {error, econnrefused} ->
-            throw(econnrefused);
-        {error, Reason} ->
-            erlang:error(Reason)
+            throw(#{reason => ssl_error, while => connecting});
+        {error, Reason} when is_atom(Reason) ->
+            throw(#{reason => Reason, while => connecting})
     catch
         exit:{{{badmatch, {error, {asn1, _}}}, _}, _} ->
-            throw(ssl_decode_error);
-        throw:{rproxy_connect_error, Reason} ->
-            throw({rproxy_connect_error, Reason});
-        Type:Error:Stack ->
-                    error_logger:error_msg("Socket connection error: ~p ~p, ~p",
-                                           [Type, Error, Stack])
+            throw(#{reason => ssl_decode_error, while => connecting});
+        throw:{error, #{} = Error} -> % going from rproxy
+            throw(Error#{while => connecting})
     end;
 send_request(#client_state{proxy = #lhttpc_url{}, proxy_setup = false} = State) ->
 % use a proxy.
@@ -312,7 +310,7 @@ send_request(#client_state{proxy = #lhttpc_url{}, proxy_setup = false} = State) 
             read_proxy_connect_response(State, nil, nil);
         {error, closed} ->
             lhttpc_sock:close(Socket, Ssl),
-            throw(proxy_connection_closed);
+            throw(#{reason => closed, while => connecting, context => proxy});
         {error, Reason} ->
             lhttpc_sock:close(Socket, Ssl),
             erlang:error(Reason)
@@ -474,7 +472,7 @@ check_send_result(#client_state{socket = Sock, ssl = Ssl}, {error, Reason}) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
--spec read_response(#client_state{}) -> {any(), socket()} | no_return().
+% -spec read_response(#client_state{}) -> {any(), socket()} | no_return().
 read_response(#client_state{socket = Socket, ssl = Ssl} = State) ->
     lhttpc_sock:setopts(Socket, [{packet, http}], Ssl),
     read_response(State, nil, {nil, nil}, []).
@@ -484,8 +482,8 @@ read_response(#client_state{socket = Socket, ssl = Ssl} = State) ->
 %% @doc @TODO This does not handle redirects at the moment.
 %% @end
 %%------------------------------------------------------------------------------
--spec read_response(#client_state{}, {integer(), integer()} | 'nil', http_status(),
-       any()) -> {any(), socket()} | no_return().
+% -spec read_response(#client_state{}, {integer(), integer()} | 'nil', http_status(),
+%        any()) -> {any(), socket()} | no_return().
 read_response(State, Vsn, {StatusCode, _} = Status, Hdrs) ->
     Socket = State#client_state.socket,
     Ssl = State#client_state.ssl,
@@ -528,8 +526,8 @@ read_response(State, Vsn, {StatusCode, _} = Status, Hdrs) ->
                 attempts = State#client_state.attempts - 1
             },
             send_request(NewState);
-        {ok, {http_error, _} = Reason} ->
-            erlang:error(Reason);
+        {ok, {http_error, String}} ->
+            throw(#{reason => http_error, while => reading_response, detail => String});
         {error, Reason} ->
             erlang:error(Reason)
     end.
