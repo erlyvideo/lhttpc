@@ -245,7 +245,22 @@ send_request(#client_state{socket = undefined, measure_time = MeasureTime} = Sta
         false ->
             ConnectOptions0
     end,
-    SocketOptions = [binary, {packet, http}, {active, false} | ConnectOptions],
+
+    % Use {verify, verify_none} by default
+    IsVerifyDefined = proplists:is_defined(verify, ConnectOptions),
+    MaybeAddVerify = if
+        Ssl andalso false == IsVerifyDefined ->
+            [{verify, verify_none}];
+        true ->
+            []
+    end,
+
+    SslSocketOptions = case Ssl of
+        true when Host == "127.0.0.1" -> [{cacertfile, code:lib_dir(lhttpc) ++ "/priv/certifi-cacerts.pem"}, {verify, verify_none}];
+        true -> [{cacertfile, code:lib_dir(lhttpc) ++ "/priv/certifi-cacerts.pem"}] ++ application:get_env(lhttpc, {ssl_host_options, Host}, MaybeAddVerify);
+        false -> []
+    end,
+    SocketOptions = [binary, {packet, http}, {active, false} | SslSocketOptions ++ ConnectOptions],
     SocketOptions1 = case proplists:get_value(log_level, SocketOptions) of
         undefined when Ssl -> [{log_level, error}|SocketOptions];
         _ -> SocketOptions
