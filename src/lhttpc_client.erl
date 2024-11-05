@@ -37,6 +37,7 @@
 
 -include("lhttpc_types.hrl").
 -include("lhttpc.hrl").
+-include("lhttpc_otel.hrl").
 
 % FIXME: change this to a properly nested call without throw.
 -dialyzer({[no_fail_call, no_contracts, no_return], [send_request/1, read_response/4]}).
@@ -98,6 +99,7 @@
 -spec request(pid(), string(), port_num(), boolean(), string(),
         method(), headers(), iolist(), options()) -> ok.
 request(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
+    ?OTEL_CONTEXT(Options),
     Result = try
         execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options)
     catch

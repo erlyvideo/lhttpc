@@ -44,6 +44,8 @@
 
 -include("lhttpc_types.hrl").
 -include("lhttpc.hrl").
+-include("lhttpc_otel.hrl").
+
 -export_type([upload_state/0]).
 
 %%==============================================================================
@@ -447,25 +449,50 @@ to_l(Atom) when is_atom(Atom) -> atom_to_list(Atom).
 -spec request(string(), port_num(), boolean(), string(), method(),
     headers(), iodata(), pos_timeout(), options()) -> result().
 request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
+    T1 = erlang:system_time(micro_seconds),
     verify_options(Options),
-    Args = [self(), Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
+    Method1 = string:uppercase(iolist_to_binary(io_lib:format("~s",[Method]))),
+    ?OTEL_START(),
+    ?OTEL_SETATTRS(#{
+        'server.address' => Host,
+        'server.port' => Port,
+        'http.request.body.size' => iolist_size(Body),
+        ssl => Ssl,
+        'http.method' => Method1,
+        'url.path' => Path
+    }),
+    Hdrs1 = Hdrs ++ ?OTEL_HEADERS(),
+    Options1 = Options ++ ?OTEL_OPTIONS(),
+    Args = [self(), Host, Port, Ssl, Path, Method, Hdrs1, Body, Options1],
     MeasureTime = proplists:get_bool(measure_time, Options),
-    T1 = os:timestamp(),
     Pid = proc_lib:spawn_link(lhttpc_client, request, Args),
     receive
         {response, Pid, {error, {Error, Stacktrace}}} ->
+            ?OTEL_END(Error),
+            %% FIXME: return {error,#{reason => Reason}} on error
             {error, {Error, Stacktrace}};
-        {response, Pid, {ok, {RStatus, RHeaders, RBody}}} when MeasureTime ->
-            T2 = os:timestamp(),
-            {ok, {RStatus, [{total_time,timer:now_diff(T2,T1)}|RHeaders], RBody}};
+        {response, Pid, {ok, {{Code,_} = RStatus, RHeaders, RBody}}} when MeasureTime ->
+            T2 = erlang:system_time(micro_seconds),
+            ?OTEL_SETATTRS(#{'http.response.code' => Code}),
+            is_binary(Body) andalso
+              ?OTEL_SETATTRS(#{'http.response.body.size' => byte_size(Body)}),
+            ?OTEL_END(ok),
+            {ok, {RStatus, [{total_time,T2 - T1}|RHeaders], RBody}};
+        {response, Pid, {error, {error, {try_clause, {error, {tls_alert, Alert}}}, Stacktrace}}} ->
+            {error, #{reason => tls_alert, tls_alert => Alert, stacktrace => Stacktrace}};
         {response, Pid, R} ->
+            ?OTEL_END(ok),
+            %% FIXME: return {error,#{reason => Reason}} on error
             R;
         {'EXIT', Pid, Reason} ->
             % This could happen if the process we're running in traps exits
             % and the client process exits due to some exit signal being
             % sent to it. Very unlikely though
+            ?OTEL_END(Reason),
+            %% FIXME: return {error,#{reason => Reason}} on error
             {error, Reason}
     after Timeout ->
+            ?OTEL_END(timeout),
             kill_client(Pid)
     end.
 
