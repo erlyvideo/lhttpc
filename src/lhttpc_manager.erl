@@ -219,7 +219,7 @@ start_collect_statistic(PidOrName, Flag) ->
 %% This is normally called by a supervisor.
 %% @end
 %%------------------------------------------------------------------------------
--spec start_link() -> {ok, pid()} | {error, already_started}.
+% -spec start_link() -> {ok, pid()} | {error, already_started}.
 start_link() ->
     start_link([]).
 
@@ -228,8 +228,8 @@ start_link() ->
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec start_link([{atom(), non_neg_integer()}]) ->
-    {ok, pid()} | {error, already_started}.
+% -spec start_link([{atom(), non_neg_integer()}]) ->
+%     {ok, pid()} | {error, already_started}.
 start_link(Options0) ->
     Options = maybe_apply_defaults([connection_timeout, pool_size, collect_statistic], Options0),
     case proplists:get_value(name, Options) of
@@ -275,9 +275,11 @@ ensure_call(Pool, Pid, Host, Port, Ssl, Options) ->
                     case lhttpc:add_pool(Pool, ConnTimeout, PoolMaxSize) of
                         {ok, _Pid} ->
                             ensure_call(Pool, Pid, Host, Port, Ssl, Options);
-                        _ ->
+                        {error, already_exists} ->
+                            ensure_call(Pool, Pid, Host, Port, Ssl, Options);
+                        _X ->
                             %% Failed to create pool, exit as expected
-                            exit({noproc, Reason})
+                            exit({noproc, Reason, _X})
                     end;
                 false ->
                     %% No dynamic pool creation, exit as expected
@@ -326,8 +328,8 @@ init(Options) ->
 %%------------------------------------------------------------------------------
 %% @hidden
 %%------------------------------------------------------------------------------
--spec handle_call(any(), any(), #httpc_man{}) ->
-    {reply, any(), #httpc_man{}}.
+% -spec handle_call(any(), any(), #httpc_man{}) ->
+%     {reply, any(), #httpc_man{}}.
 handle_call({socket, Pid, Host, Port, Ssl}, {Pid, _Ref} = From, State) ->
     #httpc_man{
         max_pool_size = MaxSize,

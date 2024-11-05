@@ -49,7 +49,7 @@
 %% supervisor.
 %% @end
 %%------------------------------------------------------------------------------
--spec start_link() -> {ok, pid()} | {error, atom()}.
+% -spec start_link() -> {ok, pid()} | {error, atom()}.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 

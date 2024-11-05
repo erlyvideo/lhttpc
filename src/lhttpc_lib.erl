@@ -338,7 +338,7 @@ format_hdrs([], Acc) ->
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec format_body(iolist(), boolean()) -> iolist().
+% -spec format_body(iolist(), boolean()) -> iolist().
 format_body(Body, false) ->
     Body;
 format_body(Body, true) ->

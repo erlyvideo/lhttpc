@@ -92,7 +92,16 @@
                         'undefined' | % HEAD request.
                         pid().        % When partial_download option is used.
 
+-type client_status() ::
+  undefined |
+  allocating_socket |
+  sending_request |
+  connecting |
+  sent_request |
+  receiving_body |
+  received_body.
+
 -type result() ::
         {ok, {{pos_integer(), string()}, headers(), body()}} |
         {ok, upload_state()} |
-        {error, atom()}.
+        {error, map()}.
