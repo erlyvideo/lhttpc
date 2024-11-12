@@ -27,9 +27,9 @@
 
 -define(OTEL_SETATTRS(Attrs), begin _ = Attrs, ok end).
 
--define(OTEL_HEADERS(), ok).
+-define(OTEL_HEADERS(), []).
 
--define(OTEL_OPTIONS(), ok).
+-define(OTEL_OPTIONS(), []).
 
 -define(OTEL_END(Status), begin _ = Status, ok end).
 
